@@ -47,7 +47,7 @@ cd SecretSanta
 python3 server.py
 ```
 
-Open your browser at **[http://localhost:8080](http://localhost:8080)**.
+Open your browser at **[http://localhost:8082](http://localhost:8082)**.
 
 The first account you register will automatically be given the `organiser` role.
 
@@ -67,67 +67,93 @@ python3 test_server.py
 
 ---
 
-## 🏠 Hosting on Homelab (Proxmox + Caddy)
+## 🏠 Homelab Deployment: Dedicated Proxmox LXC + Nginx Proxy Manager (NPM)
 
-### Option A: Running with Docker Compose (Recommended)
+Target External Host: **`santa.xoric.co.uk`**
 
-If you run Docker in a Proxmox LXC or VM:
+### 1. Create the Dedicated Proxmox LXC Container
+1. In Proxmox VE, create a new LXC container:
+   - **Template:** Debian 12 (Bookworm) or Ubuntu 24.04/22.04 LTS.
+   - **Resources:** 1 Core, 512 MB RAM, 4 GB Disk (plenty of room for SQLite and logs).
+   - **Network:** Assign a static internal IP (e.g., `192.168.1.50/24`) with your gateway and DNS.
+2. Start the LXC container and open its console.
 
-1. Clone or copy this repository to your server:
-   ```bash
-   git clone <repo-url> /opt/secretsanta
-   cd /opt/secretsanta
-   ```
+### 2. Install Secret Santa in the LXC Container
+In your LXC terminal:
 
-2. Start the container:
-   ```bash
-   docker compose up -d
-   ```
-   Data is stored in `./data/secretsanta.db` and persists across container updates.
+```bash
+# 1. Ensure git & python3 are installed
+apt update && apt install -y git python3
 
----
+# 2. Clone the repository into /opt/secretsanta
+git clone https://github.com/Xoric82/SecretSanta.git /opt/secretsanta
+cd /opt/secretsanta
 
-### Option B: Running directly with systemd (Debian/Ubuntu Proxmox LXC)
+# 3. Create persistent data directory and set permissions
+mkdir -p /opt/secretsanta/data
+chown -R www-data:www-data /opt/secretsanta
 
-If you run a lightweight Debian or Ubuntu LXC container without Docker:
+# 4. Install and enable the systemd service
+cp /opt/secretsanta/secretsanta.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now secretsanta
 
-1. Copy the project to `/opt/secretsanta`:
-   ```bash
-   mkdir -p /opt/secretsanta/data
-   cp -r * /opt/secretsanta/
-   chown -R www-data:www-data /opt/secretsanta
-   ```
+# 5. Verify it's active and listening on port 8082
+systemctl status secretsanta
+```
 
-2. Install and enable the systemd service:
-   ```bash
-   cp /opt/secretsanta/secretsanta.service /etc/systemd/system/
-   systemctl daemon-reload
-   systemctl enable --now secretsanta
-   ```
-
-3. Check status:
-   ```bash
-   systemctl status secretsanta
-   ```
+The service is now running in the background and listening on port `8082`.
 
 ---
 
-### Caddy Configuration
+### 3. Route via Nginx Proxy Manager (NPM)
 
-Add the following block to your `/etc/caddy/Caddyfile` on your Caddy host:
+Open your Nginx Proxy Manager web admin dashboard:
+
+1. Go to **Hosts** &rarr; **Proxy Hosts** &rarr; click **Add Proxy Host**.
+2. **Details Tab**:
+   - **Domain Names:** `santa.xoric.co.uk`
+   - **Scheme:** `http`
+   - **Forward Hostname / IP:** `<LXC-IP>` (e.g. `192.168.1.50` or container hostname)
+   - **Forward Port:** `8082`
+   - **Cache Assets:** `ON` (optional, improves performance)
+   - **Block Common Exploits:** `ON`
+   - **Websockets Support:** `ON`
+3. **SSL Tab**:
+   - **SSL Certificate:** *Request a new SSL Certificate*
+   - **Force SSL:** `ON`
+   - **HTTP/2 Support:** `ON`
+   - **HSTS Enabled:** `ON`
+   - Enter your email and agree to Let's Encrypt ToS.
+4. Click **Save**.
+
+Your family can now visit **`https://santa.xoric.co.uk`** securely from any phone, tablet, or PC!
+
+---
+
+### Alternative: Caddy Reverse Proxy Configuration
+
+If routing through Caddy instead of NPM, add this block to your `/etc/caddy/Caddyfile`:
 
 ```caddyfile
-santa.yourfamilydomain.com {
-    # Reverse proxy to Secret Santa port 8080
-    reverse_proxy 127.0.0.1:8080 {
+santa.xoric.co.uk {
+    reverse_proxy 127.0.0.1:8082 {
         header_up Host {host}
         header_up X-Real-IP {remote_host}
         header_up X-Forwarded-For {remote_host}
         header_up X-Forwarded-Proto {scheme}
     }
 
-    # Security headers
     header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    encode zstd gzip
+}
+```
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
         X-Content-Type-Options "nosniff"
         X-Frame-Options "SAMEORIGIN"

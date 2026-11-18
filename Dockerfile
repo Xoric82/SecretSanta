@@ -15,11 +15,11 @@ RUN mkdir -p /data && chown -R appuser:appgroup /app /data
 
 USER appuser
 
-ENV PORT=8080
+ENV PORT=8082
 ENV HOST=0.0.0.0
 ENV SECRETSANTA_DB=/data/secretsanta.db
 
-EXPOSE 8080
+EXPOSE 8082
 
 VOLUME ["/data"]
 
