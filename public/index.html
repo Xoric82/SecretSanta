@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Family Secret Santa</title>
+  <meta name="description" content="A simple, private Secret Santa app with wishlist management and secret gift purchasing for family members.">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <!-- Accessible Live Announcer for Screen Readers -->
+  <div id="live-announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- Header -->
+  <header class="app-header">
+    <div class="container header-inner">
+      <a href="#home" class="brand" aria-label="Secret Santa Home">
+        <svg viewBox="0 0 64 64" width="32" height="32" aria-hidden="true">
+          <use href="/favicon.svg#boxGrad"></use>
+          <rect x="10" y="24" width="44" height="34" rx="4" fill="#c1121f" />
+          <rect x="7" y="16" width="50" height="10" rx="3" fill="#d90429" />
+          <rect x="28" y="16" width="8" height="42" fill="#ffd166" />
+          <rect x="10" y="37" width="44" height="8" fill="#ffd166" />
+          <circle cx="32" cy="16" r="4" fill="#ffb703" />
+        </svg>
+        <span>Secret Santa</span>
+        <span class="brand-badge" id="header-event-badge">Family 2026</span>
+      </a>
+
+      <!-- Navigation & Auth Links -->
+      <nav class="main-nav" id="main-nav" aria-label="Main Navigation">
+        <!-- Rendered dynamically by app.js -->
+      </nav>
+    </div>
+  </header>
+
+  <!-- Main View Container -->
+  <main class="container" id="app" role="main">
+    <!-- Rendered dynamically based on state / URL hash -->
+    <div class="empty-state">
+      <div class="empty-icon">🎁</div>
+      <p class="empty-title">Loading Secret Santa...</p>
+    </div>
+  </main>
+
+  <!-- ======================================================== -->
+  <!-- NATIVE MODAL DIALOGS (Modern Web Guidance Standards)      -->
+  <!-- ======================================================== -->
+
+  <!-- Add / Edit Wishlist Item Dialog -->
+  <dialog id="item-dialog" aria-labelledby="item-dialog-title">
+    <div class="dialog-header">
+      <h2 class="dialog-title" id="item-dialog-title">Add Wishlist Item</h2>
+      <button type="button" class="dialog-close" data-action="close-dialog" aria-label="Close dialog">&times;</button>
+    </div>
+    <form id="item-form" method="dialog">
+      <input type="hidden" id="item-id" name="item_id" value="">
+      <div class="dialog-body">
+        <div class="form-group">
+          <label class="form-label" for="item-title">Item Title *</label>
+          <input class="form-input" type="text" id="item-title" name="title" required minlength="2" placeholder="e.g. Cozy Wool Socks, French Press Coffee Maker">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="item-price">Approximate Price or Guide</label>
+          <input class="form-input" type="text" id="item-price" name="price" placeholder="e.g. $20, £15, under $30">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="item-url">Link / Web URL</label>
+          <input class="form-input" type="url" id="item-url" name="url" placeholder="https://example.com/item">
+          <div class="form-hint">Paste an online store link if you have a specific item in mind.</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="item-desc">Details / Notes / Size / Color</label>
+          <textarea class="form-textarea" id="item-desc" name="description" rows="3" placeholder="Size Medium, Dark Gray or Navy, any brand is fine!"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="item-priority">Priority</label>
+          <select class="form-select" id="item-priority" name="priority">
+            <option value="1">Normal (Nice to have)</option>
+            <option value="2">⭐ Top Pick (Really love this!)</option>
+          </select>
+        </div>
+      </div>
+      <div class="dialog-footer">
+        <button type="button" class="btn btn-secondary" data-action="close-dialog">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="item-submit-btn">Save Item</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Organiser Secret Santa Draw Confirmation Dialog -->
+  <dialog id="draw-dialog" aria-labelledby="draw-dialog-title">
+    <div class="dialog-header">
+      <h2 class="dialog-title" id="draw-dialog-title">🎄 Trigger Secret Santa Draw</h2>
+      <button type="button" class="dialog-close" data-action="close-dialog" aria-label="Close dialog">&times;</button>
+    </div>
+    <div class="dialog-body">
+      <p style="margin-bottom: 0.75rem;">Are you ready to draw names? Here is how it works:</p>
+      <ul style="padding-left: 1.25rem; margin-bottom: 1rem; color: var(--color-text-muted); font-size: 0.9375rem;">
+        <li>Each participant is randomly assigned one family member to gift.</li>
+        <li><strong>Nobody will be assigned to themselves.</strong></li>
+        <li>Each member will only see their own assigned recipient when they log in.</li>
+        <li>As the organiser, even you won't see other people's matches to keep the surprise intact!</li>
+      </ul>
+      <p style="font-weight: 600; color: var(--color-primary);" id="draw-dialog-count">Current participants: 0</p>
+    </div>
+    <div class="dialog-footer">
+      <button type="button" class="btn btn-secondary" data-action="close-dialog">Cancel</button>
+      <button type="button" class="btn btn-primary" id="confirm-draw-btn">Draw Names Now 🎲</button>
+    </div>
+  </dialog>
+
+  <!-- Organiser Reset Draw Confirmation Dialog -->
+  <dialog id="reset-dialog" aria-labelledby="reset-dialog-title">
+    <div class="dialog-header">
+      <h2 class="dialog-title" id="reset-dialog-title">⚠️ Reset Secret Santa Draw</h2>
+      <button type="button" class="dialog-close" data-action="close-dialog" aria-label="Close dialog">&times;</button>
+    </div>
+    <div class="dialog-body">
+      <p style="color: var(--color-danger); font-weight: 600; margin-bottom: 0.5rem;">Warning: This will clear all existing Secret Santa assignments.</p>
+      <p style="color: var(--color-text-muted); font-size: 0.9375rem;">Only use this if a new family member joined after the draw was made and you need to re-shuffle.</p>
+    </div>
+    <div class="dialog-footer">
+      <button type="button" class="btn btn-secondary" data-action="close-dialog">Cancel</button>
+      <button type="button" class="btn btn-danger" id="confirm-reset-btn">Yes, Reset Draw</button>
+    </div>
+  </dialog>
+
+  <!-- Organiser Event Settings Dialog -->
+  <dialog id="settings-dialog" aria-labelledby="settings-dialog-title">
+    <div class="dialog-header">
+      <h2 class="dialog-title" id="settings-dialog-title">⚙️ Event Settings</h2>
+      <button type="button" class="dialog-close" data-action="close-dialog" aria-label="Close dialog">&times;</button>
+    </div>
+    <form id="settings-form" method="dialog">
+      <div class="dialog-body">
+        <div class="form-group">
+          <label class="form-label" for="setting-event-name">Event Name *</label>
+          <input class="form-input" type="text" id="setting-event-name" name="event_name" required value="Family Secret Santa">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="setting-budget">Suggested Budget / Spend Limit</label>
+          <input class="form-input" type="text" id="setting-budget" name="budget_limit" placeholder="e.g. $25 - $50, £30 max">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="setting-date">Gift Exchange / Reveal Date</label>
+          <input class="form-input" type="text" id="setting-date" name="reveal_date" placeholder="e.g. Christmas Eve, Dec 25, or 2026-12-25">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="setting-rules">Rules or Family Message</label>
+          <textarea class="form-textarea" id="setting-rules" name="rules_note" rows="3" placeholder="e.g. Wrap your gifts and bring them to dinner!"></textarea>
+        </div>
+      </div>
+      <div class="dialog-footer">
+        <button type="button" class="btn btn-secondary" data-action="close-dialog">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Settings</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container" aria-live="polite"></div>
+
+  <!-- Footer -->
+  <footer class="app-footer">
+    <div class="container">
+      <p>🎄 Family Secret Santa &bull; Built with native Modern Web standards &bull; Hosted on Homelab</p>
+    </div>
+  </footer>
+
+  <!-- Main ES Module Script -->
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
