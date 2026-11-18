@@ -14,7 +14,10 @@ const state = {
   currentUser: null,       // { id, username, display_name, role }
   event: null,             // { event_name, budget_limit, reveal_date, rules_note, is_drawn }
   assignment: null,        // { receiver_id, receiver_display_name, wishlist_count }
-  participants: [],        // array of user objects
+  participants: [],        // array of user objects (adults + children)
+  children: [],            // child profiles managed by the current user
+  childrenAssignments: [], // [{ child_id, child_display_name, receiver_id, receiver_display_name, wishlist_count }]
+  itemDialogOwnerId: null, // whose wishlist the item dialog is editing (self or a managed child)
   currentWishlist: null,   // { user, is_owner, items }
   requiresRegistrationCode: false,
   currentRoute: 'home',
@@ -69,6 +72,10 @@ async function api(endpoint, options = {}) {
     const res = await fetch(endpoint, config);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
+      if (data.code === 'password_change_required' && state.currentUser && !state.currentUser.must_change_password) {
+        state.currentUser.must_change_password = true;
+        renderApp();
+      }
       throw new Error(data.error || `HTTP error ${res.status}`);
     }
     return data;
@@ -109,7 +116,15 @@ function setupDialog(dialogId) {
 // ==========================================
 
 function navigate(hash) {
-  window.location.hash = hash;
+  if (window.location.hash === hash) {
+    // hashchange won't fire for the same hash, so render explicitly
+    const { route, param } = parseHash();
+    state.currentRoute = route;
+    state.routeParam = param;
+    updateView(() => renderApp());
+  } else {
+    window.location.hash = hash;
+  }
 }
 
 function parseHash() {
@@ -159,6 +174,8 @@ function renderNav() {
     return;
   }
 
+  const mustChange = Boolean(state.currentUser.must_change_password);
+
   // Logged-in navigation
   const homeLink = document.createElement('a');
   homeLink.href = '#home';
@@ -175,9 +192,14 @@ function renderNav() {
   familyLink.textContent = 'Family Lists 🎄';
   if (state.currentRoute === 'family') familyLink.classList.add('active');
 
-  nav.append(homeLink, myWishlistLink, familyLink);
+  const childrenLink = document.createElement('a');
+  childrenLink.href = '#children';
+  childrenLink.textContent = 'Children 🧒';
+  if (state.currentRoute === 'children') childrenLink.classList.add('active');
 
-  if (state.currentUser.role === 'organiser') {
+  if (!mustChange) nav.append(homeLink, myWishlistLink, familyLink, childrenLink);
+
+  if (state.currentUser.role === 'organiser' && !mustChange) {
     const orgLink = document.createElement('a');
     orgLink.href = '#organiser';
     orgLink.textContent = 'Organiser ⚙️';
@@ -185,9 +207,12 @@ function renderNav() {
     nav.append(orgLink);
   }
 
-  // User Chip
-  const userChip = document.createElement('div');
+  // User Chip (links to account page)
+  const userChip = document.createElement('a');
   userChip.className = 'user-chip';
+  userChip.href = '#account';
+  userChip.title = 'My account';
+  if (state.currentRoute === 'account') userChip.classList.add('active');
 
   const avatar = document.createElement('span');
   avatar.className = 'user-avatar';
@@ -208,6 +233,9 @@ function renderNav() {
       await api('/api/logout', { method: 'POST' });
       state.currentUser = null;
       state.assignment = null;
+      state.children = [];
+      state.childrenAssignments = [];
+      state.participants = [];
       showToast('Signed out successfully', 'info');
       navigate('#login');
     } catch (err) {
@@ -222,6 +250,12 @@ function renderApp() {
   renderNav();
   const app = document.getElementById('app');
   app.replaceChildren();
+
+  // After an organiser password reset, nothing else is available until a new password is chosen
+  if (state.currentUser && state.currentUser.must_change_password) {
+    renderPasswordView(true);
+    return;
+  }
 
   // Route dispatch
   switch (state.currentRoute) {
@@ -256,6 +290,20 @@ function renderApp() {
         return;
       }
       renderFamilyDirectoryView();
+      break;
+    case 'account':
+      if (!state.currentUser) {
+        navigate('#login');
+        return;
+      }
+      renderPasswordView(false);
+      break;
+    case 'children':
+      if (!state.currentUser) {
+        navigate('#login');
+        return;
+      }
+      renderChildrenView();
       break;
     case 'organiser':
       if (!state.currentUser || state.currentUser.role !== 'organiser') {
@@ -466,7 +514,7 @@ function renderDashboardView() {
       <div class="event-meta">
         ${evt.budget_limit ? `<span>💰 Budget: <strong>${escapeHtml(evt.budget_limit)}</strong></span>` : ''}
         ${evt.reveal_date ? `<span>📅 Reveal Date: <strong>${escapeHtml(evt.reveal_date)}</strong></span>` : ''}
-        <span>👥 Participants: <strong>${state.participants.length}</strong></span>
+        <span>👥 In the draw: <strong>${drawParticipants().length}</strong></span>
       </div>
       ${evt.rules_note ? `<p style="margin-top: 0.75rem; font-size: 0.9375rem; opacity: 0.9;">${escapeHtml(evt.rules_note)}</p>` : ''}
     </div>
@@ -513,6 +561,39 @@ function renderDashboardView() {
     app.append(pendingCard);
   }
 
+  // Children's assignments (parent shops on their behalf)
+  if (evt.is_drawn && state.childrenAssignments.length > 0) {
+    const kidsSection = document.createElement('section');
+    kidsSection.style.marginTop = '2rem';
+
+    const kidsTitle = document.createElement('h2');
+    kidsTitle.style.fontSize = '1.25rem';
+    kidsTitle.style.marginBottom = '1rem';
+    kidsTitle.textContent = "🧒 Your Children's Secret Santa Recipients";
+    kidsSection.append(kidsTitle);
+
+    const kidsGrid = document.createElement('div');
+    kidsGrid.className = 'cards-grid';
+    state.childrenAssignments.forEach(ca => {
+      const card = document.createElement('a');
+      card.className = 'member-card';
+      card.href = `#wishlist/${ca.receiver_id}`;
+      card.innerHTML = `
+        <div class="member-info">
+          <div class="member-avatar" style="background: #ffd166; color: #780000;">🎁</div>
+          <div>
+            <div class="member-name">${escapeHtml(ca.child_display_name)} is buying for</div>
+            <div class="member-role"><strong>${escapeHtml(ca.receiver_display_name)}</strong></div>
+          </div>
+        </div>
+        <div class="member-count">${ca.wishlist_count || 0} item${ca.wishlist_count === 1 ? '' : 's'} &rarr;</div>
+      `;
+      kidsGrid.append(card);
+    });
+    kidsSection.append(kidsGrid);
+    app.append(kidsSection);
+  }
+
   // Quick Action Links
   const quickActions = document.createElement('div');
   quickActions.style.display = 'grid';
@@ -541,6 +622,16 @@ function renderDashboardView() {
       </div>
       <span>&rarr;</span>
     </a>
+    <a href="#children" class="member-card">
+      <div class="member-info">
+        <div class="member-avatar" style="background: var(--color-gold);">🧒</div>
+        <div>
+          <div class="member-name">My Children</div>
+          <div class="member-role">Add kids & manage their wishlists</div>
+        </div>
+      </div>
+      <span>&rarr;</span>
+    </a>
   `;
   app.append(quickActions);
 }
@@ -563,6 +654,9 @@ async function renderWishlistView(userId, isOwner) {
   try {
     const data = await api(`/api/wishlist/${userId}`);
     state.currentWishlist = data;
+    // Parent managing a child's list: can edit items AND sees purchase status (the child never logs in)
+    const isManagedChild = Boolean(data.can_manage && !isOwner);
+    const canEdit = isOwner || isManagedChild;
 
     app.replaceChildren();
 
@@ -576,27 +670,37 @@ async function renderWishlistView(userId, isOwner) {
 
     const subtitle = document.createElement('p');
     subtitle.className = 'section-subtitle';
-    subtitle.textContent = isOwner
-      ? 'Add gifts you would love to receive this year.'
-      : `Looking for a gift for ${data.user.display_name}? Browse their requests below.`;
+    if (isOwner) {
+      subtitle.textContent = 'Add gifts you would love to receive this year.';
+    } else if (isManagedChild) {
+      subtitle.textContent = `You manage this list for ${data.user.display_name}. Add their gift ideas below.`;
+    } else if (data.user.is_child) {
+      subtitle.textContent = `${data.user.display_name}'s list is looked after by ${data.user.parent_display_name || 'a parent'}. Browse their requests below.`;
+    } else {
+      subtitle.textContent = `Looking for a gift for ${data.user.display_name}? Browse their requests below.`;
+    }
 
     titleDiv.append(title, subtitle);
     header.append(titleDiv);
 
-    if (isOwner) {
+    const headerActions = document.createElement('div');
+    headerActions.className = 'organiser-actions';
+    if (canEdit) {
       const addBtn = document.createElement('button');
       addBtn.type = 'button';
       addBtn.className = 'btn btn-primary';
       addBtn.innerHTML = '<span>+</span> Add Gift Idea';
-      addBtn.addEventListener('click', () => openItemDialog());
-      header.append(addBtn);
-    } else {
-      const backLink = document.createElement('a');
-      backLink.href = '#family';
-      backLink.className = 'btn btn-secondary';
-      backLink.textContent = '← All Family Members';
-      header.append(backLink);
+      addBtn.addEventListener('click', () => openItemDialog(null, userId));
+      headerActions.append(addBtn);
     }
+    if (!isOwner) {
+      const backLink = document.createElement('a');
+      backLink.href = isManagedChild ? '#children' : '#family';
+      backLink.className = 'btn btn-secondary';
+      backLink.textContent = isManagedChild ? '← My Children' : '← All Family Members';
+      headerActions.append(backLink);
+    }
+    header.append(headerActions);
 
     app.append(header);
 
@@ -612,6 +716,17 @@ async function renderWishlistView(userId, isOwner) {
         <div>
           <strong>Secret Santa Privacy Shield Active:</strong>
           To keep your gifts a total surprise until reveal day, you will never see which items on this list have been marked as purchased!
+        </div>
+      `;
+    } else if (isManagedChild) {
+      shieldBanner.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+        <div>
+          <strong>Parent View:</strong>
+          Because ${escapeHtml(data.user.display_name)} doesn't log in, you can see which items have been purchased.
+          <em>Keep it a secret from them until reveal day!</em>
         </div>
       `;
     } else {
@@ -639,15 +754,15 @@ async function renderWishlistView(userId, isOwner) {
         <div class="empty-icon">📝</div>
         <p class="empty-title">${isOwner ? 'Your wishlist is empty' : 'No items yet'}</p>
         <p class="empty-desc">
-          ${isOwner ? 'Add clothing sizes, hobby ideas, books, or store links to help your Secret Santa!' : `${data.user.display_name} hasn't added any items to their wishlist yet. Check back soon!`}
+          ${canEdit ? 'Add clothing sizes, hobby ideas, books, or store links to help their Secret Santa!' : `${escapeHtml(data.user.display_name)} hasn't added any items to their wishlist yet. Check back soon!`}
         </p>
       `;
-      if (isOwner) {
+      if (canEdit) {
         const addFirstBtn = document.createElement('button');
         addFirstBtn.type = 'button';
         addFirstBtn.className = 'btn btn-primary';
-        addFirstBtn.textContent = 'Add Your First Item 🎁';
-        addFirstBtn.addEventListener('click', () => openItemDialog());
+        addFirstBtn.textContent = isOwner ? 'Add Your First Item 🎁' : `Add ${data.user.display_name}'s First Item 🎁`;
+        addFirstBtn.addEventListener('click', () => openItemDialog(null, userId));
         empty.append(addFirstBtn);
       }
       app.append(empty);
@@ -721,8 +836,8 @@ async function renderWishlistView(userId, isOwner) {
       const footer = document.createElement('div');
       footer.className = 'item-footer';
 
-      if (isOwner) {
-        // Owner controls: Edit & Delete
+      if (canEdit) {
+        // Owner / managing-parent controls: Edit & Delete
         const actions = document.createElement('div');
         actions.style.display = 'flex';
         actions.style.gap = '0.5rem';
@@ -731,7 +846,7 @@ async function renderWishlistView(userId, isOwner) {
         editBtn.type = 'button';
         editBtn.className = 'btn btn-secondary btn-sm';
         editBtn.textContent = 'Edit';
-        editBtn.addEventListener('click', () => openItemDialog(item));
+        editBtn.addEventListener('click', () => openItemDialog(item, userId));
 
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
@@ -739,7 +854,7 @@ async function renderWishlistView(userId, isOwner) {
         delBtn.style.color = 'var(--color-danger)';
         delBtn.textContent = 'Delete';
         delBtn.addEventListener('click', async () => {
-          if (confirm(`Remove "${item.title}" from your wishlist?`)) {
+          if (confirm(`Remove "${item.title}" from ${isOwner ? 'your' : `${data.user.display_name}'s`} wishlist?`)) {
             try {
               await api(`/api/wishlist/${item.id}`, { method: 'DELETE' });
               showToast('Item deleted', 'info');
@@ -752,7 +867,8 @@ async function renderWishlistView(userId, isOwner) {
 
         actions.append(editBtn, delBtn);
         footer.append(actions);
-      } else {
+      }
+      if (!isOwner) {
         // Non-owner controls: Mark as Purchased / Unmark
         const buyBtn = document.createElement('button');
         buyBtn.type = 'button';
@@ -806,7 +922,7 @@ async function handleTogglePurchase(itemId, userId) {
     } else {
       showToast('Item unmarked', 'info');
     }
-    renderWishlistView(userId, false);
+    renderWishlistView(userId, state.currentUser && state.currentUser.id === userId);
   } catch (err) {
     showToast(err.message || 'Error updating purchase status', 'error');
   }
@@ -851,6 +967,10 @@ function renderFamilyDirectoryView() {
 
     const isSelf = (state.currentUser && state.currentUser.id === u.id);
     const isAssigned = (state.assignment && state.assignment.receiver_id === u.id);
+    const isMyChild = (state.currentUser && u.parent_id === state.currentUser.id);
+    const subline = u.is_child
+      ? (isMyChild ? 'Your child · managed by you' : `Child of ${u.parent_display_name || 'a family member'}`)
+      : `@${u.username}`;
 
     card.innerHTML = `
       <div class="member-info">
@@ -861,8 +981,10 @@ function renderFamilyDirectoryView() {
           <div class="member-name">
             ${escapeHtml(u.display_name)} ${isSelf ? '<span class="badge" style="background:var(--color-surface-hover);">You</span>' : ''}
             ${isAssigned ? '<span class="badge badge-priority">Your Match 🎁</span>' : ''}
+            ${u.is_child ? '<span class="badge badge-child">🧒 Child</span>' : ''}
+            ${u.in_draw === false ? '<span class="badge badge-excluded">Not in draw</span>' : ''}
           </div>
-          <div class="member-role">@${escapeHtml(u.username)}</div>
+          <div class="member-role">${escapeHtml(subline)}</div>
         </div>
       </div>
       <div class="member-count">
@@ -874,6 +996,278 @@ function renderFamilyDirectoryView() {
   });
 
   app.append(grid);
+}
+
+// ==========================================
+// Account / Password View
+// ==========================================
+
+function renderPasswordView(forced) {
+  const app = document.getElementById('app');
+  const container = document.createElement('div');
+  container.className = 'auth-container';
+
+  container.innerHTML = `
+    <div class="auth-header">
+      <div class="empty-icon" aria-hidden="true">🔑</div>
+      <h1 style="font-size: 1.5rem; font-weight: 700;">${forced ? 'Choose a New Password' : 'My Account'}</h1>
+      <p style="color: var(--color-text-muted); font-size: 0.9375rem;">
+        ${forced
+          ? 'The organiser has reset your password. Please choose a new one to continue.'
+          : `Signed in as <strong>${escapeHtml(state.currentUser.display_name)}</strong> (@${escapeHtml(state.currentUser.username)})`}
+      </p>
+    </div>
+    <form id="password-form">
+      ${forced ? '' : `
+      <div class="form-group">
+        <label class="form-label" for="pw-current">Current Password</label>
+        <input class="form-input" type="password" id="pw-current" required autocomplete="current-password">
+      </div>`}
+      <div class="form-group">
+        <label class="form-label" for="pw-new">New Password</label>
+        <input class="form-input" type="password" id="pw-new" required minlength="4" autocomplete="new-password">
+        <div class="form-hint">At least 4 characters. You'll stay signed in here; other devices will be signed out.</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="pw-confirm">Confirm New Password</label>
+        <input class="form-input" type="password" id="pw-confirm" required minlength="4" autocomplete="new-password">
+      </div>
+      <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 1.5rem;">
+        ${forced ? 'Save & Continue 🎄' : 'Change Password'}
+      </button>
+    </form>
+  `;
+  app.append(container);
+
+  const form = container.querySelector('#password-form');
+  const newInput = form.querySelector('#pw-new');
+  const confirmInput = form.querySelector('#pw-confirm');
+  confirmInput.addEventListener('input', () => confirmInput.setCustomValidity(''));
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (newInput.value !== confirmInput.value) {
+      confirmInput.setCustomValidity('Passwords do not match');
+      confirmInput.reportValidity();
+      return;
+    }
+    const body = { new_password: newInput.value };
+    if (!forced) body.current_password = form.querySelector('#pw-current').value;
+    try {
+      const res = await api('/api/account/password', { method: 'POST', body: JSON.stringify(body) });
+      state.currentUser = res.user;
+      showToast(forced ? 'Password saved. Welcome! 🎄' : 'Password changed', 'success');
+      await refreshState();
+      navigate('#home');
+    } catch (err) {
+      showToast(err.message || 'Could not change password', 'error');
+    }
+  });
+
+  (forced ? newInput : form.querySelector('#pw-current')).focus();
+}
+
+// ==========================================
+// My Children View (child profiles managed by this login)
+// ==========================================
+
+function buildDrawToggle(user, isDrawn) {
+  const label = document.createElement('label');
+  label.className = 'toggle-row';
+
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.checked = user.in_draw !== false;
+  checkbox.disabled = isDrawn;
+
+  const text = document.createElement('span');
+  text.textContent = 'Include in Secret Santa draw';
+
+  checkbox.addEventListener('change', async () => {
+    checkbox.disabled = true;
+    try {
+      await api(`/api/users/${user.id}/draw`, {
+        method: 'POST',
+        body: JSON.stringify({ in_draw: checkbox.checked })
+      });
+      showToast(
+        checkbox.checked ? `${user.display_name} is in the draw 🎲` : `${user.display_name} won't be in the draw`,
+        'success'
+      );
+      await refreshState();
+      renderApp();
+    } catch (err) {
+      checkbox.checked = !checkbox.checked;
+      checkbox.disabled = false;
+      showToast(err.message || 'Could not update draw inclusion', 'error');
+    }
+  });
+
+  label.append(checkbox, text);
+  return label;
+}
+
+function renderChildrenView() {
+  const app = document.getElementById('app');
+  const isDrawn = Boolean(state.event && state.event.is_drawn);
+
+  const header = document.createElement('div');
+  header.className = 'section-header';
+  header.innerHTML = `
+    <div>
+      <h1 class="section-title">🧒 My Children</h1>
+      <p class="section-subtitle">Add children who don't have their own login. You manage their wishlists and choose whether they take part in the draw.</p>
+    </div>
+  `;
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'btn btn-primary';
+  addBtn.innerHTML = '<span>+</span> Add Child';
+  addBtn.addEventListener('click', () => openChildDialog());
+  header.append(addBtn);
+  app.append(header);
+
+  if (isDrawn) {
+    const lock = document.createElement('div');
+    lock.className = 'shield-notice lock-notice';
+    lock.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+      </svg>
+      <div>
+        <strong>Names have been drawn.</strong>
+        You can still edit wishlists, but changing who's in the draw (or removing a child who is in it) needs the organiser to reset the draw first.
+      </div>
+    `;
+    app.append(lock);
+  }
+
+  const children = state.children || [];
+  if (children.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.innerHTML = `
+      <div class="empty-icon">🧒</div>
+      <p class="empty-title">No children added yet</p>
+      <p class="empty-desc">Add a child to give them their own wishlist. They won't need a username or password — you look after it for them.</p>
+    `;
+    const addFirst = document.createElement('button');
+    addFirst.type = 'button';
+    addFirst.className = 'btn btn-primary';
+    addFirst.textContent = 'Add Your First Child 🧒';
+    addFirst.addEventListener('click', () => openChildDialog());
+    empty.append(addFirst);
+    app.append(empty);
+    return;
+  }
+
+  const grid = document.createElement('div');
+  grid.className = 'cards-grid';
+
+  children.forEach(child => {
+    const card = document.createElement('article');
+    card.className = 'item-card child-card';
+
+    const top = document.createElement('div');
+    top.className = 'item-card-top';
+    const name = document.createElement('h2');
+    name.className = 'item-title';
+    name.textContent = child.display_name;
+    const badges = document.createElement('div');
+    badges.className = 'item-badges';
+    const countBadge = document.createElement('span');
+    countBadge.className = 'badge badge-child';
+    countBadge.textContent = `${child.wishlist_count || 0} item${child.wishlist_count === 1 ? '' : 's'}`;
+    badges.append(countBadge);
+    top.append(name, badges);
+
+    const meta = document.createElement('div');
+    meta.className = 'child-meta';
+    meta.append(buildDrawToggle(child, isDrawn));
+
+    const assignment = state.childrenAssignments.find(a => a.child_id === child.id);
+    if (assignment) {
+      const line = document.createElement('div');
+      line.className = 'child-assignment';
+      line.append('🎁 Buying for: ');
+      const link = document.createElement('a');
+      link.href = `#wishlist/${assignment.receiver_id}`;
+      link.textContent = assignment.receiver_display_name;
+      line.append(link);
+      meta.append(line);
+    } else if (isDrawn && child.in_draw) {
+      const line = document.createElement('div');
+      line.className = 'child-assignment';
+      line.textContent = '⏳ No recipient assigned';
+      meta.append(line);
+    }
+
+    const footer = document.createElement('div');
+    footer.className = 'item-footer';
+
+    const manage = document.createElement('a');
+    manage.className = 'btn btn-primary btn-sm';
+    manage.href = `#wishlist/${child.id}`;
+    manage.textContent = 'Manage Wishlist';
+
+    const rename = document.createElement('button');
+    rename.type = 'button';
+    rename.className = 'btn btn-secondary btn-sm';
+    rename.textContent = 'Rename';
+    rename.addEventListener('click', () => openChildDialog(child));
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'btn btn-secondary btn-sm';
+    remove.style.color = 'var(--color-danger)';
+    remove.textContent = 'Remove';
+    remove.addEventListener('click', async () => {
+      if (!confirm(`Remove ${child.display_name} and their whole wishlist? This can't be undone.`)) return;
+      try {
+        await api(`/api/children/${child.id}`, { method: 'DELETE' });
+        showToast(`${child.display_name} removed`, 'info');
+        await refreshState();
+        renderApp();
+      } catch (err) {
+        showToast(err.message || 'Could not remove child', 'error');
+      }
+    });
+
+    footer.append(manage, rename, remove);
+    card.append(top, meta, footer);
+    grid.append(card);
+  });
+
+  app.append(grid);
+}
+
+function openChildDialog(existingChild = null) {
+  const dialog = document.getElementById('child-dialog');
+  const form = document.getElementById('child-form');
+  if (!dialog || !form) return;
+
+  form.reset();
+  const isDrawn = Boolean(state.event && state.event.is_drawn);
+  const inDrawGroup = form.querySelector('#child-in-draw-group');
+  const inDrawBox = form.querySelector('#child-in-draw');
+
+  if (existingChild) {
+    document.getElementById('child-dialog-title').textContent = `Rename ${existingChild.display_name}`;
+    form.querySelector('#child-id').value = existingChild.id;
+    form.querySelector('#child-name').value = existingChild.display_name;
+    form.querySelector('#child-submit-btn').textContent = 'Save';
+    inDrawGroup.hidden = true;
+  } else {
+    document.getElementById('child-dialog-title').textContent = 'Add a Child';
+    form.querySelector('#child-id').value = '';
+    form.querySelector('#child-submit-btn').textContent = 'Add Child';
+    inDrawGroup.hidden = false;
+    // After the draw, new children can only be added outside the draw
+    inDrawBox.checked = !isDrawn;
+    inDrawBox.disabled = isDrawn;
+  }
+
+  dialog.showModal();
 }
 
 // ==========================================
@@ -897,7 +1291,7 @@ function renderOrganiserView() {
   panel.className = 'organiser-panel';
 
   const isDrawn = Boolean(state.event && state.event.is_drawn);
-  const participantCount = state.participants.length;
+  const participantCount = drawParticipants().length;
 
   panel.innerHTML = `
     <div class="organiser-panel-header">
@@ -908,7 +1302,7 @@ function renderOrganiserView() {
         <p style="color: var(--color-text-muted); font-size: 0.9375rem;">
           ${isDrawn 
             ? `Names were drawn on ${new Date(state.event.drawn_at).toLocaleDateString()}. Each family member can view their secret recipient.`
-            : `${participantCount} participant${participantCount === 1 ? '' : 's'} registered so far. You need at least 2 people to draw.`}
+            : `${participantCount} of ${state.participants.length} people are in the draw. You need at least 2 people to draw.`}
         </p>
       </div>
       <div class="organiser-actions" id="org-action-buttons">
@@ -957,47 +1351,158 @@ function renderOrganiserView() {
   const listTitle = document.createElement('h2');
   listTitle.style.fontSize = '1.25rem';
   listTitle.style.marginBottom = '1rem';
-  listTitle.textContent = `Participants Roster (${participantCount})`;
+  listTitle.textContent = `Participants Roster (${participantCount} in draw / ${state.participants.length} total)`;
   app.append(listTitle);
+
+  const rosterHint = document.createElement('p');
+  rosterHint.className = 'section-subtitle';
+  rosterHint.style.marginBottom = '1rem';
+  rosterHint.textContent = isDrawn
+    ? 'Draw inclusion is locked while names are drawn. Reset the draw to change who takes part.'
+    : 'Untick anyone who should have a wishlist but not take part in the draw.';
+  app.append(rosterHint);
 
   const rosterGrid = document.createElement('div');
   rosterGrid.className = 'cards-grid';
 
   state.participants.forEach(u => {
     const card = document.createElement('div');
-    card.className = 'item-card';
+    card.className = 'item-card child-card';
+    const roleBadge = u.is_child
+      ? '<span class="badge badge-child">🧒 child</span>'
+      : `<span class="badge ${u.role === 'organiser' ? 'badge-priority' : ''}">${escapeHtml(u.role)}</span>`;
+    const identity = u.is_child
+      ? `Managed by <strong>${escapeHtml(u.parent_display_name || 'unknown')}</strong>`
+      : `Username: <code>@${escapeHtml(u.username)}</code>`;
     card.innerHTML = `
       <div class="item-card-top">
         <div style="font-weight: 700; font-size: 1.0625rem;">${escapeHtml(u.display_name)}</div>
-        <span class="badge ${u.role === 'organiser' ? 'badge-priority' : ''}">${escapeHtml(u.role)}</span>
+        ${roleBadge}
       </div>
       <div style="color: var(--color-text-subtle); font-size: 0.875rem; margin-bottom: 0.5rem;">
-        Username: <code>@${escapeHtml(u.username)}</code>
+        ${identity}
       </div>
-      <div style="font-size: 0.9375rem; color: var(--color-text-muted);">
+      <div style="font-size: 0.9375rem; color: var(--color-text-muted); margin-bottom: 0.75rem;">
         Wishlist items added: <strong>${u.wishlist_count || 0}</strong>
       </div>
     `;
+    card.append(buildDrawToggle(u, isDrawn));
+    if (!u.is_child) card.append(buildAccountControls(u));
     rosterGrid.append(card);
   });
 
   app.append(rosterGrid);
 }
 
+function buildAccountControls(u) {
+  const wrap = document.createElement('div');
+  const sec = u.security || {};
+  const isSelf = state.currentUser && u.id === state.currentUser.id;
+
+  const badges = document.createElement('div');
+  badges.className = 'item-badges';
+  badges.style.marginTop = '0.75rem';
+  if (sec.is_locked) {
+    const b = document.createElement('span');
+    b.className = 'badge badge-locked';
+    const until = new Date(sec.locked_until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    b.textContent = `🔒 Locked until ${until}`;
+    b.title = 'Too many failed sign-in attempts';
+    badges.append(b);
+  } else if (sec.failed_logins > 0) {
+    const b = document.createElement('span');
+    b.className = 'badge badge-reset';
+    b.textContent = `⚠️ ${sec.failed_logins} failed sign-in${sec.failed_logins === 1 ? '' : 's'}`;
+    badges.append(b);
+  }
+  if (sec.must_change_password) {
+    const b = document.createElement('span');
+    b.className = 'badge badge-reset';
+    b.textContent = '🔑 Temporary password';
+    b.title = 'Will be asked to choose a new password at next sign-in';
+    badges.append(b);
+  }
+  if (badges.childElementCount) wrap.append(badges);
+
+  const actions = document.createElement('div');
+  actions.className = 'account-actions';
+
+  if (isSelf) {
+    const link = document.createElement('a');
+    link.href = '#account';
+    link.className = 'btn btn-secondary btn-sm';
+    link.textContent = 'Change my password';
+    actions.append(link);
+    wrap.append(actions);
+    return wrap;
+  }
+
+  if (sec.is_locked) {
+    const unlockBtn = document.createElement('button');
+    unlockBtn.type = 'button';
+    unlockBtn.className = 'btn btn-secondary btn-sm';
+    unlockBtn.textContent = '🔓 Unlock';
+    unlockBtn.addEventListener('click', async () => {
+      try {
+        await api(`/api/admin/users/${u.id}/unlock`, { method: 'POST' });
+        showToast(`${u.display_name} can sign in again`, 'success');
+        await refreshState();
+        renderApp();
+      } catch (err) {
+        showToast(err.message || 'Could not unlock account', 'error');
+      }
+    });
+    actions.append(unlockBtn);
+  }
+
+  const resetBtn = document.createElement('button');
+  resetBtn.type = 'button';
+  resetBtn.className = 'btn btn-secondary btn-sm';
+  resetBtn.textContent = '🔑 Reset password';
+  resetBtn.addEventListener('click', async () => {
+    if (!confirm(`Reset ${u.display_name}'s password? Their current password will stop working and they'll be signed out everywhere.`)) return;
+    try {
+      const res = await api(`/api/admin/users/${u.id}/reset-password`, { method: 'POST' });
+      showTempPassword(res);
+      await refreshState();
+      renderApp();
+    } catch (err) {
+      showToast(err.message || 'Could not reset password', 'error');
+    }
+  });
+  actions.append(resetBtn);
+
+  wrap.append(actions);
+  return wrap;
+}
+
+function showTempPassword(res) {
+  const dialog = document.getElementById('temp-password-dialog');
+  if (!dialog) return;
+  document.getElementById('temp-password-intro').textContent =
+    `Give ${res.display_name} (username @${res.username}) this temporary password:`;
+  document.getElementById('temp-password-value').textContent = res.temporary_password;
+  dialog.showModal();
+}
+
 // ==========================================
 // Dialog Logic (Add/Edit Item, Settings, Draw)
 // ==========================================
 
-function openItemDialog(existingItem = null) {
+function openItemDialog(existingItem = null, ownerId = null) {
   const dialog = document.getElementById('item-dialog');
   const titleEl = document.getElementById('item-dialog-title');
   const form = document.getElementById('item-form');
   if (!dialog || !form) return;
 
   form.reset();
+  state.itemDialogOwnerId = ownerId ?? (state.currentUser && state.currentUser.id);
+  const isForChild = state.currentUser && state.itemDialogOwnerId !== state.currentUser.id;
+  const childName = isForChild && state.currentWishlist ? state.currentWishlist.user.display_name : '';
+  form.querySelector('#item-owner-id').value = state.itemDialogOwnerId || '';
 
   if (existingItem) {
-    titleEl.textContent = 'Edit Wishlist Item';
+    titleEl.textContent = isForChild ? `Edit ${childName}'s Item` : 'Edit Wishlist Item';
     form.querySelector('#item-id').value = existingItem.id;
     form.querySelector('#item-title').value = existingItem.title || '';
     form.querySelector('#item-price').value = existingItem.price || '';
@@ -1005,7 +1510,7 @@ function openItemDialog(existingItem = null) {
     form.querySelector('#item-desc').value = existingItem.description || '';
     form.querySelector('#item-priority').value = existingItem.priority || 1;
   } else {
-    titleEl.textContent = 'Add Wishlist Item';
+    titleEl.textContent = isForChild ? `Add Item for ${childName}` : 'Add Wishlist Item';
     form.querySelector('#item-id').value = '';
   }
 
@@ -1022,6 +1527,7 @@ function openSettingsDialog() {
   form.querySelector('#setting-budget').value = evt.budget_limit || '';
   form.querySelector('#setting-date').value = evt.reveal_date || '';
   form.querySelector('#setting-rules').value = evt.rules_note || '';
+  form.querySelector('#setting-avoid-household').checked = evt.avoid_household !== 0;
 
   dialog.showModal();
 }
@@ -1031,7 +1537,34 @@ function openSettingsDialog() {
 // ==========================================
 
 function initDialogListeners() {
-  ['item-dialog', 'draw-dialog', 'reset-dialog', 'settings-dialog'].forEach(setupDialog);
+  ['item-dialog', 'draw-dialog', 'reset-dialog', 'settings-dialog', 'child-dialog', 'temp-password-dialog'].forEach(setupDialog);
+
+  // Copy temporary password (Clipboard API needs a secure context; fall back to selecting the text)
+  const copyBtn = document.getElementById('copy-temp-password-btn');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', async () => {
+      const valueEl = document.getElementById('temp-password-value');
+      try {
+        await navigator.clipboard.writeText(valueEl.textContent);
+        showToast('Copied to clipboard', 'success');
+      } catch {
+        const range = document.createRange();
+        range.selectNodeContents(valueEl);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        showToast('Selected. Press Ctrl+C / Cmd+C to copy', 'info');
+      }
+    });
+  }
+
+  // Clear the temporary password from the DOM once the dialog is closed
+  const tempDialog = document.getElementById('temp-password-dialog');
+  if (tempDialog) {
+    tempDialog.addEventListener('close', () => {
+      document.getElementById('temp-password-value').textContent = '';
+    });
+  }
 
   // Wishlist item form submission
   const itemForm = document.getElementById('item-form');
@@ -1047,20 +1580,57 @@ function initDialogListeners() {
         priority: parseInt(itemForm.querySelector('#item-priority').value, 10)
       };
 
+      const ownerId = state.itemDialogOwnerId || (state.currentUser && state.currentUser.id);
+      const isSelf = state.currentUser && ownerId === state.currentUser.id;
+      if (!isSelf) data.user_id = ownerId;
+
       try {
         if (itemId) {
           await api(`/api/wishlist/${itemId}`, { method: 'PUT', body: JSON.stringify(data) });
           showToast('Wishlist item updated! 🎁', 'success');
         } else {
           await api('/api/wishlist', { method: 'POST', body: JSON.stringify(data) });
-          showToast('Item added to your wishlist! 🎁', 'success');
+          showToast(isSelf ? 'Item added to your wishlist! 🎁' : 'Item added to their wishlist! 🎁', 'success');
         }
         document.getElementById('item-dialog').close();
         if (state.currentUser) {
-          renderWishlistView(state.currentUser.id, true);
+          renderWishlistView(ownerId, isSelf);
         }
       } catch (err) {
         showToast(err.message || 'Error saving item', 'error');
+      }
+    });
+  }
+
+  // Child add / rename form
+  const childForm = document.getElementById('child-form');
+  if (childForm) {
+    childForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const childId = childForm.querySelector('#child-id').value;
+      const displayName = childForm.querySelector('#child-name').value.trim();
+      try {
+        if (childId) {
+          await api(`/api/children/${childId}`, {
+            method: 'PUT',
+            body: JSON.stringify({ display_name: displayName })
+          });
+          showToast('Name updated', 'success');
+        } else {
+          await api('/api/children', {
+            method: 'POST',
+            body: JSON.stringify({
+              display_name: displayName,
+              in_draw: childForm.querySelector('#child-in-draw').checked
+            })
+          });
+          showToast(`${displayName} added! Now add some gift ideas 🎁`, 'success');
+        }
+        document.getElementById('child-dialog').close();
+        await refreshState();
+        renderApp();
+      } catch (err) {
+        showToast(err.message || 'Could not save child', 'error');
       }
     });
   }
@@ -1106,7 +1676,8 @@ function initDialogListeners() {
         event_name: settingsForm.querySelector('#setting-event-name').value.trim(),
         budget_limit: settingsForm.querySelector('#setting-budget').value.trim(),
         reveal_date: settingsForm.querySelector('#setting-date').value.trim(),
-        rules_note: settingsForm.querySelector('#setting-rules').value.trim()
+        rules_note: settingsForm.querySelector('#setting-rules').value.trim(),
+        avoid_household: settingsForm.querySelector('#setting-avoid-household').checked
       };
 
       try {
@@ -1120,6 +1691,10 @@ function initDialogListeners() {
       }
     });
   }
+}
+
+function drawParticipants() {
+  return (state.participants || []).filter(u => u.in_draw !== false);
 }
 
 // Helper to escape HTML characters
@@ -1138,6 +1713,8 @@ async function refreshState() {
     const meData = await api('/api/me');
     state.currentUser = meData.user;
     state.assignment = meData.assignment;
+    state.children = meData.children || [];
+    state.childrenAssignments = meData.children_assignments || [];
     state.event = meData.event;
     if (meData.requires_registration_code !== undefined) {
       state.requiresRegistrationCode = Boolean(meData.requires_registration_code);

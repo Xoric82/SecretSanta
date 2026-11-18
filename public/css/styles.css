@@ -974,3 +974,126 @@ footer.app-footer {
   outline: 2px solid var(--color-primary);
   outline-offset: 2px;
 }
+
+/* ==========================================
+   Child Profiles & Draw Inclusion
+   ========================================== */
+.badge-child {
+  background-color: var(--color-festive-green-light);
+  color: var(--color-festive-green);
+}
+
+.badge-excluded {
+  background-color: var(--color-surface-hover);
+  color: var(--color-text-subtle);
+  border: 1px dashed var(--color-border-hover);
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9375rem;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle-row input[type="checkbox"] {
+  inline-size: 1.125rem;
+  block-size: 1.125rem;
+  accent-color: var(--color-festive-green);
+  cursor: inherit;
+}
+
+.toggle-row:has(input:disabled) {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.child-card .child-meta {
+  display: grid;
+  gap: 0.625rem;
+  margin-block: 0.5rem 0.75rem;
+}
+
+.child-card .child-assignment {
+  font-size: 0.9375rem;
+  color: var(--color-text-main);
+}
+
+.child-card .child-assignment a {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.child-card .item-footer {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.child-card:has(.toggle-row input:not(:checked)) {
+  background-color: var(--color-surface-subtle);
+}
+
+.lock-notice {
+  border-color: var(--color-gold-border);
+  background-color: var(--color-gold-light);
+  color: var(--color-gold);
+}
+
+.item-footer {
+  flex-wrap: wrap;
+}
+
+/* ==========================================
+   Accounts: password change & organiser security controls
+   ========================================== */
+.temp-password {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-align: center;
+  padding: 0.875rem;
+  border: 2px dashed var(--color-gold-border);
+  background-color: var(--color-gold-light);
+  color: var(--color-text-main);
+  border-radius: var(--radius-md);
+  user-select: all;
+}
+
+.badge-locked {
+  background-color: var(--color-danger-light);
+  color: var(--color-danger);
+}
+
+.badge-reset {
+  background-color: var(--color-gold-light);
+  color: var(--color-gold);
+}
+
+.account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--color-border);
+}
+
+nav.main-nav a.user-chip {
+  padding: 0.375rem 0.75rem;
+  background-color: var(--color-surface-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  font-size: 0.875rem;
+  color: var(--color-text-main);
+}
+
+nav.main-nav a.user-chip:hover,
+nav.main-nav a.user-chip.active {
+  border-color: var(--color-border-hover);
+  background-color: var(--color-surface-hover);
+}

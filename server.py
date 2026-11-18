@@ -24,6 +24,33 @@ PUBLIC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "public"))
 def get_registration_passphrase() -> str:
     return os.environ.get("REGISTRATION_PASSPHRASE", "").strip()
 
+
+SESSION_MAX_AGE = 30 * 24 * 60 * 60
+
+# While must_change_password is set, a session may only use these endpoints.
+PASSWORD_CHANGE_ALLOWED_PATHS = {"/api/me", "/api/logout", "/api/account/password"}
+
+
+def cookie_secure_mode() -> str:
+    """COOKIE_SECURE: 'auto' (default) = Secure when the request arrived over HTTPS
+    (X-Forwarded-Proto from Caddy / Nginx Proxy Manager); 'true' = always; 'false' = never."""
+    return os.environ.get("COOKIE_SECURE", "auto").strip().lower()
+
+def parse_priority(value) -> int:
+    try:
+        return 2 if int(value) == 2 else 1
+    except (TypeError, ValueError):
+        return 1
+
+
+def parse_id_path(path: str, prefix: str, suffix: str = ""):
+    """Returns the integer id from paths like '<prefix><id><suffix>', else None."""
+    if not path.startswith(prefix) or not path.endswith(suffix):
+        return None
+    middle = path[len(prefix):len(path) - len(suffix)] if suffix else path[len(prefix):]
+    return int(middle) if middle.isdigit() else None
+
+
 MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
@@ -82,33 +109,70 @@ class SecretSantaRequestHandler(BaseHTTPRequestHandler):
             if content_length == 0:
                 return {}
             body = self.rfile.read(content_length)
-            return json.loads(body.decode("utf-8"))
+            parsed = json.loads(body.decode("utf-8"))
+            return parsed if isinstance(parsed, dict) else None
         except Exception:
             return None
+
+    def is_https_request(self) -> bool:
+        mode = cookie_secure_mode()
+        if mode in ("true", "1", "yes"):
+            return True
+        if mode in ("false", "0", "no"):
+            return False
+        proto = self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower()
+        return proto == "https"
+
+    def cookie_attributes(self) -> str:
+        attrs = "Path=/; HttpOnly; SameSite=Lax"
+        if self.is_https_request():
+            attrs += "; Secure"
+        return attrs
 
     def send_json(self, data, status=HTTPStatus.OK, cookie_token=None, delete_cookie=False):
         response_bytes = json.dumps(data, indent=2).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(response_bytes)))
+        # API responses carry per-user secrets (assignments, purchases): never cache
+        self.send_header("Cache-Control", "no-store")
 
         if cookie_token:
-            # 30 days expiration
             self.send_header(
                 "Set-Cookie",
-                f"session_token={cookie_token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000"
+                f"session_token={cookie_token}; {self.cookie_attributes()}; Max-Age={SESSION_MAX_AGE}"
             )
         elif delete_cookie:
             self.send_header(
                 "Set-Cookie",
-                "session_token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+                f"session_token=; {self.cookie_attributes()}; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
             )
 
         self.end_headers()
         self.wfile.write(response_bytes)
 
-    def send_error_json(self, message: str, status=HTTPStatus.BAD_REQUEST):
-        self.send_json({"error": message}, status=status)
+    def send_error_json(self, message: str, status=HTTPStatus.BAD_REQUEST, **extra):
+        self.send_json({"error": message, **extra}, status=status)
+
+    def require_user(self, path: str):
+        """Returns the signed-in user, or sends 401/403 and returns None."""
+        user = self.get_current_user()
+        if not user:
+            self.send_error_json("Authentication required", HTTPStatus.UNAUTHORIZED)
+            return None
+        if user.get("must_change_password") and path not in PASSWORD_CHANGE_ALLOWED_PATHS:
+            self.send_error_json(
+                "You must choose a new password before continuing.",
+                HTTPStatus.FORBIDDEN, code="password_change_required"
+            )
+            return None
+        return user
+
+    def require_organiser(self, user) -> bool:
+        if user["role"] != "organiser":
+            self.send_error_json("Only the organiser can do that", HTTPStatus.FORBIDDEN)
+            return False
+        return True
 
     def serve_static(self, file_path: str):
         # Resolve normalized path
@@ -218,58 +282,77 @@ class SecretSantaRequestHandler(BaseHTTPRequestHandler):
 
             event = db.get_event_settings()
             assignment = db.get_user_assignment(user["id"]) if event["is_drawn"] else None
+            children_assignments = db.get_children_assignments(user["id"]) if event["is_drawn"] else []
             self.send_json({
                 "user": user,
                 "assignment": assignment,
+                "children": db.get_children(user["id"]),
+                "children_assignments": children_assignments,
                 "event": event,
                 "requires_registration_code": requires_code
             })
             return
 
-        # /api/event
+        # /api/event (participant list only for signed-in family members)
         if path == "/api/event":
-            event = db.get_event_settings()
-            users = db.get_all_users()
+            current_user = self.get_current_user()
+            participants = []
+            if current_user and not current_user.get("must_change_password"):
+                participants = db.get_all_users()
+                if current_user["role"] == "organiser":
+                    security = db.get_security_status()
+                    for p in participants:
+                        if p["id"] in security:
+                            p["security"] = security[p["id"]]
             self.send_json({
-                "event": event,
-                "participants": users,
+                "event": db.get_event_settings(),
+                "participants": participants,
                 "requires_registration_code": bool(get_registration_passphrase())
             })
             return
 
+        # Authentication required for remaining endpoints
+        current_user = self.require_user(path)
+        if not current_user:
+            return
+
         # /api/wishlists (List all participants for wishlist navigation)
         if path == "/api/wishlists":
-            users = db.get_all_users()
-            self.send_json({"users": users})
+            self.send_json({"users": db.get_all_users()})
+            return
+
+        # /api/children (Child profiles managed by the current user)
+        if path == "/api/children":
+            self.send_json({"children": db.get_children(current_user["id"])})
             return
 
         # /api/wishlist/<user_id>
-        if path.startswith("/api/wishlist/"):
-            parts = path.split("/")
-            if len(parts) == 4 and parts[3].isdigit():
-                target_user_id = int(parts[3])
-                current_user = self.get_current_user()
-                viewer_id = current_user["id"] if current_user else 0
-
-                # Find user display name
-                all_users = db.get_all_users()
-                target_user = next((u for u in all_users if u["id"] == target_user_id), None)
-                if not target_user:
-                    self.send_error_json("User not found", HTTPStatus.NOT_FOUND)
-                    return
-
-                items = db.get_wishlist(target_user_id, viewer_user_id=viewer_id)
-                self.send_json({
-                    "user": {
-                        "id": target_user["id"],
-                        "username": target_user["username"],
-                        "display_name": target_user["display_name"],
-                        "role": target_user["role"]
-                    },
-                    "is_owner": (viewer_id == target_user_id),
-                    "items": items
-                })
+        target_user_id = parse_id_path(path, "/api/wishlist/")
+        if target_user_id is not None:
+            viewer_id = current_user["id"]
+            target_user = db.get_user(target_user_id)
+            if not target_user:
+                self.send_error_json("User not found", HTTPStatus.NOT_FOUND)
                 return
+
+            items = db.get_wishlist(target_user_id, viewer_user_id=viewer_id)
+            self.send_json({
+                "user": {
+                    "id": target_user["id"],
+                    "username": target_user["username"],
+                    "display_name": target_user["display_name"],
+                    "role": target_user["role"],
+                    "is_child": target_user["is_child"],
+                    "parent_id": target_user["parent_id"],
+                    "parent_display_name": target_user["parent_display_name"],
+                    "in_draw": target_user["in_draw"]
+                },
+                "is_owner": (viewer_id == target_user_id),
+                # Parents can add/edit/delete items on their children's lists
+                "can_manage": (target_user["parent_id"] == viewer_id) or (viewer_id == target_user_id),
+                "items": items
+            })
+            return
 
         self.send_error_json("Not Found", HTTPStatus.NOT_FOUND)
 
@@ -297,10 +380,10 @@ class SecretSantaRequestHandler(BaseHTTPRequestHandler):
             try:
                 user = db.create_user(username, display_name, password)
                 token = db.create_session(user["id"])
+                # The token travels only in the HttpOnly cookie, never in a JS-readable body
                 self.send_json({
                     "status": "success",
-                    "user": user,
-                    "token": token
+                    "user": user
                 }, status=HTTPStatus.CREATED, cookie_token=token)
             except ValueError as e:
                 self.send_error_json(str(e))
@@ -310,15 +393,23 @@ class SecretSantaRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/login":
             username = data.get("username", "")
             password = data.get("password", "")
-            user = db.authenticate_user(username, password)
+            if not isinstance(username, str) or not isinstance(password, str):
+                self.send_error_json("Invalid username or password", HTTPStatus.UNAUTHORIZED)
+                return
+            try:
+                user = db.authenticate_user(username, password)
+            except db.AccountLockedError as e:
+                self.send_error_json(str(e), HTTPStatus.TOO_MANY_REQUESTS,
+                                     code="account_locked", minutes_remaining=e.minutes_remaining)
+                return
             if not user:
                 self.send_error_json("Invalid username or password", HTTPStatus.UNAUTHORIZED)
                 return
             token = db.create_session(user["id"])
+            db.purge_expired_sessions()
             self.send_json({
                 "status": "success",
-                "user": user,
-                "token": token
+                "user": user
             }, cookie_token=token)
             return
 
@@ -331,9 +422,61 @@ class SecretSantaRequestHandler(BaseHTTPRequestHandler):
             return
 
         # Authentication required for remaining endpoints
-        current_user = self.get_current_user()
+        current_user = self.require_user(path)
         if not current_user:
-            self.send_error_json("Authentication required", HTTPStatus.UNAUTHORIZED)
+            return
+
+        # /api/account/password (Change own password; forced after an organiser reset)
+        if path == "/api/account/password":
+            new_password = data.get("new_password", "")
+            current_password = data.get("current_password")
+            if not isinstance(new_password, str) or (current_password is not None and not isinstance(current_password, str)):
+                self.send_error_json("Invalid request")
+                return
+            # After an organiser reset the user has just signed in with the temporary
+            # password, so we don't ask for it again. Otherwise the current password is required.
+            if not current_user["must_change_password"] and current_password is None:
+                self.send_error_json("Current password is required")
+                return
+            try:
+                db.change_password(
+                    current_user["id"], new_password,
+                    current_password=None if current_user["must_change_password"] else current_password,
+                    keep_session_token=self.get_session_token()
+                )
+                self.send_json({"status": "success", "user": db.get_user_from_session(self.get_session_token())})
+            except PermissionError as e:
+                self.send_error_json(str(e), HTTPStatus.FORBIDDEN)
+            except ValueError as e:
+                self.send_error_json(str(e))
+            return
+
+        # /api/admin/users/<id>/reset-password and /unlock (Organiser only)
+        reset_id = parse_id_path(path, "/api/admin/users/", "/reset-password")
+        unlock_id = parse_id_path(path, "/api/admin/users/", "/unlock")
+        if reset_id is not None or unlock_id is not None:
+            if not self.require_organiser(current_user):
+                return
+            target_id = reset_id if reset_id is not None else unlock_id
+            target = db.get_user(target_id)
+            if not target or target["is_child"]:
+                self.send_error_json("User not found", HTTPStatus.NOT_FOUND)
+                return
+            if reset_id is not None:
+                if target_id == current_user["id"]:
+                    self.send_error_json("Use 'Change password' on your account page to change your own password")
+                    return
+                temp = db.admin_reset_password(target_id)
+                self.send_json({
+                    "status": "success",
+                    "user_id": target_id,
+                    "display_name": target["display_name"],
+                    "username": target["username"],
+                    "temporary_password": temp
+                })
+            else:
+                db.unlock_user(target_id)
+                self.send_json({"status": "success", "user_id": target_id})
             return
 
         # /api/event/update (Organiser only)
@@ -345,7 +488,11 @@ class SecretSantaRequestHandler(BaseHTTPRequestHandler):
             budget_limit = data.get("budget_limit", "")
             reveal_date = data.get("reveal_date", "")
             rules_note = data.get("rules_note", "")
-            db.update_event_settings(event_name, budget_limit, reveal_date, rules_note)
+            avoid_household = data.get("avoid_household")
+            db.update_event_settings(
+                event_name, budget_limit, reveal_date, rules_note,
+                avoid_household=None if avoid_household is None else bool(avoid_household)
+            )
             self.send_json({"status": "success", "event": db.get_event_settings()})
             return
 
@@ -353,6 +500,9 @@ class SecretSantaRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/draw":
             if current_user["role"] != "organiser":
                 self.send_error_json("Only the organiser can trigger the Secret Santa draw", HTTPStatus.FORBIDDEN)
+                return
+            if db.get_event_settings()["is_drawn"]:
+                self.send_error_json("Names have already been drawn. Reset the draw first to re-shuffle.", HTTPStatus.CONFLICT)
                 return
             try:
                 res = db.perform_secret_santa_draw()
@@ -370,16 +520,50 @@ class SecretSantaRequestHandler(BaseHTTPRequestHandler):
             self.send_json({"status": "success", "message": "Draw has been reset."})
             return
 
-        # /api/wishlist (Add item to own wishlist)
+        # /api/children (Create a child profile under the current login)
+        if path == "/api/children":
+            try:
+                child = db.create_child(
+                    current_user["id"],
+                    str(data.get("display_name", "")),
+                    in_draw=bool(data.get("in_draw", True))
+                )
+                self.send_json(child, status=HTTPStatus.CREATED)
+            except ValueError as e:
+                self.send_error_json(str(e))
+            return
+
+        # /api/users/<id>/draw (Include/exclude from draw: parent for own children, organiser for anyone)
+        target_id = parse_id_path(path, "/api/users/", "/draw")
+        if target_id is not None:
+            if not isinstance(data.get("in_draw"), bool):
+                self.send_error_json("'in_draw' must be true or false")
+                return
+            try:
+                user = db.set_draw_inclusion(current_user, target_id, data["in_draw"])
+                self.send_json({"status": "success", "user": user})
+            except LookupError as e:
+                self.send_error_json(str(e), HTTPStatus.NOT_FOUND)
+            except PermissionError as e:
+                self.send_error_json(str(e), HTTPStatus.FORBIDDEN)
+            except ValueError as e:
+                self.send_error_json(str(e), HTTPStatus.CONFLICT)
+            return
+
+        # /api/wishlist (Add item to own wishlist, or to a managed child's wishlist via user_id)
         if path == "/api/wishlist":
-            title = data.get("title", "")
-            description = data.get("description", "")
-            url = data.get("url", "")
-            price = data.get("price", "")
-            priority = int(data.get("priority", 1))
+            title = str(data.get("title", ""))
+            description = str(data.get("description", ""))
+            url = str(data.get("url", ""))
+            price = str(data.get("price", ""))
+            priority = parse_priority(data.get("priority", 1))
+            owner_id = data.get("user_id") or current_user["id"]
+            if isinstance(owner_id, bool) or not isinstance(owner_id, int) or not db.can_manage(current_user["id"], owner_id):
+                self.send_error_json("You can only add items to your own or your children's wishlists", HTTPStatus.FORBIDDEN)
+                return
             try:
                 item = db.add_wishlist_item(
-                    current_user["id"], title, description, url, price, priority
+                    owner_id, title, description, url, price, priority
                 )
                 self.send_json(item, status=HTTPStatus.CREATED)
             except ValueError as e:
@@ -401,9 +585,8 @@ class SecretSantaRequestHandler(BaseHTTPRequestHandler):
         self.send_error_json("Not Found", HTTPStatus.NOT_FOUND)
 
     def handle_api_put(self, path: str):
-        current_user = self.get_current_user()
+        current_user = self.require_user(path)
         if not current_user:
-            self.send_error_json("Authentication required", HTTPStatus.UNAUTHORIZED)
             return
 
         data = self.read_json_body()
@@ -411,16 +594,28 @@ class SecretSantaRequestHandler(BaseHTTPRequestHandler):
             self.send_error_json("Invalid JSON request body")
             return
 
+        # /api/children/<id> (Rename a child profile)
+        child_id = parse_id_path(path, "/api/children/")
+        if child_id is not None:
+            try:
+                if db.rename_child(current_user["id"], child_id, str(data.get("display_name", ""))):
+                    self.send_json({"status": "success", "child": db.get_user(child_id)})
+                else:
+                    self.send_error_json("Child not found", HTTPStatus.NOT_FOUND)
+            except ValueError as e:
+                self.send_error_json(str(e))
+            return
+
         # /api/wishlist/<item_id>
         if path.startswith("/api/wishlist/"):
             parts = path.split("/")
             if len(parts) == 4 and parts[3].isdigit():
                 item_id = int(parts[3])
-                title = data.get("title", "")
-                description = data.get("description", "")
-                url = data.get("url", "")
-                price = data.get("price", "")
-                priority = int(data.get("priority", 1))
+                title = str(data.get("title", ""))
+                description = str(data.get("description", ""))
+                url = str(data.get("url", ""))
+                price = str(data.get("price", ""))
+                priority = parse_priority(data.get("priority", 1))
                 try:
                     updated = db.update_wishlist_item(
                         item_id, current_user["id"], title, description, url, price, priority
@@ -436,9 +631,20 @@ class SecretSantaRequestHandler(BaseHTTPRequestHandler):
         self.send_error_json("Not Found", HTTPStatus.NOT_FOUND)
 
     def handle_api_delete(self, path: str):
-        current_user = self.get_current_user()
+        current_user = self.require_user(path)
         if not current_user:
-            self.send_error_json("Authentication required", HTTPStatus.UNAUTHORIZED)
+            return
+
+        # /api/children/<id> (Remove a child profile and their wishlist)
+        child_id = parse_id_path(path, "/api/children/")
+        if child_id is not None:
+            try:
+                if db.delete_child(current_user["id"], child_id):
+                    self.send_json({"status": "success", "deleted_child_id": child_id})
+                else:
+                    self.send_error_json("Child not found", HTTPStatus.NOT_FOUND)
+            except ValueError as e:
+                self.send_error_json(str(e), HTTPStatus.CONFLICT)
             return
 
         # /api/wishlist/<item_id>
@@ -458,6 +664,9 @@ class SecretSantaRequestHandler(BaseHTTPRequestHandler):
 
 def run_server(host=HOST, port=PORT):
     db.init_db()
+    purged = db.purge_expired_sessions()
+    if purged:
+        print(f"Removed {purged} expired session(s)")
     server = ThreadingHTTPServer((host, port), SecretSantaRequestHandler)
     print(f"🎄 Secret Santa server running at http://{host}:{port}/")
     try:

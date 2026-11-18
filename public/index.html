@@ -6,7 +6,7 @@
   <title>Family Secret Santa</title>
   <meta name="description" content="A simple, private Secret Santa app with wishlist management and secret gift purchasing for family members.">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/css/styles.css?v=1.2">
+  <link rel="stylesheet" href="/css/styles.css?v=1.4">
 </head>
 <body>
   <!-- Accessible Live Announcer for Screen Readers -->
@@ -56,6 +56,7 @@
     </div>
     <form id="item-form" method="dialog">
       <input type="hidden" id="item-id" name="item_id" value="">
+      <input type="hidden" id="item-owner-id" name="user_id" value="">
       <div class="dialog-body">
         <div class="form-group">
           <label class="form-label" for="item-title">Item Title *</label>
@@ -100,6 +101,7 @@
       <ul style="padding-left: 1.25rem; margin-bottom: 1rem; color: var(--color-text-muted); font-size: 0.9375rem;">
         <li>Each participant is randomly assigned one family member to gift.</li>
         <li><strong>Nobody will be assigned to themselves.</strong></li>
+        <li>Children are never assigned their own parent, and only people marked "in the draw" take part.</li>
         <li>Each member will only see their own assigned recipient when they log in.</li>
         <li>As the organiser, even you won't see other people's matches to keep the surprise intact!</li>
       </ul>
@@ -151,12 +153,68 @@
           <label class="form-label" for="setting-rules">Rules or Family Message</label>
           <textarea class="form-textarea" id="setting-rules" name="rules_note" rows="3" placeholder="e.g. Wrap your gifts and bring them to dinner!"></textarea>
         </div>
+        <div class="form-group">
+          <label class="toggle-row" for="setting-avoid-household">
+            <input type="checkbox" id="setting-avoid-household" name="avoid_household">
+            Keep households apart in the draw
+          </label>
+          <div class="form-hint">When on, nobody is matched with their own parent or child, or a sibling managed by the same parent.</div>
+        </div>
       </div>
       <div class="dialog-footer">
         <button type="button" class="btn btn-secondary" data-action="close-dialog">Cancel</button>
         <button type="submit" class="btn btn-primary">Save Settings</button>
       </div>
     </form>
+  </dialog>
+
+  <!-- Add / Rename Child Profile Dialog -->
+  <dialog id="child-dialog" aria-labelledby="child-dialog-title">
+    <div class="dialog-header">
+      <h2 class="dialog-title" id="child-dialog-title">Add a Child</h2>
+      <button type="button" class="dialog-close" data-action="close-dialog" aria-label="Close dialog">&times;</button>
+    </div>
+    <form id="child-form" method="dialog">
+      <input type="hidden" id="child-id" value="">
+      <div class="dialog-body">
+        <div class="form-group">
+          <label class="form-label" for="child-name">Child's Name *</label>
+          <input class="form-input" type="text" id="child-name" name="display_name" required maxlength="60" placeholder="e.g. Emma, Little Leo">
+          <div class="form-hint">This is the name family members will see on the wishlist.</div>
+        </div>
+        <div class="form-group" id="child-in-draw-group">
+          <label class="toggle-row" for="child-in-draw">
+            <input type="checkbox" id="child-in-draw" name="in_draw" checked>
+            Include in the Secret Santa draw
+          </label>
+          <div class="form-hint">If included, they'll be given someone to buy for (you'll see who and shop on their behalf). Leave unticked if they just need a wishlist.</div>
+        </div>
+      </div>
+      <div class="dialog-footer">
+        <button type="button" class="btn btn-secondary" data-action="close-dialog">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="child-submit-btn">Add Child</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Organiser: Temporary Password Result Dialog -->
+  <dialog id="temp-password-dialog" aria-labelledby="temp-password-title">
+    <div class="dialog-header">
+      <h2 class="dialog-title" id="temp-password-title">🔑 Temporary Password</h2>
+      <button type="button" class="dialog-close" data-action="close-dialog" aria-label="Close dialog">&times;</button>
+    </div>
+    <div class="dialog-body">
+      <p id="temp-password-intro" style="margin-bottom: 0.75rem;"></p>
+      <output class="temp-password" id="temp-password-value" aria-live="polite"></output>
+      <p class="form-hint" style="margin-top: 0.75rem;">
+        This is only shown once. Share it with them privately. When they sign in they'll be asked to choose
+        a new password. Any devices they were signed in on have been signed out, and any lockout has been cleared.
+      </p>
+    </div>
+    <div class="dialog-footer">
+      <button type="button" class="btn btn-secondary" id="copy-temp-password-btn">Copy</button>
+      <button type="button" class="btn btn-primary" data-action="close-dialog">Done</button>
+    </div>
   </dialog>
 
   <!-- Toast Notification Container -->
@@ -170,6 +228,6 @@
   </footer>
 
   <!-- Main ES Module Script -->
-  <script type="module" src="/js/app.js?v=1.2"></script>
+  <script type="module" src="/js/app.js?v=1.4"></script>
 </body>
 </html>

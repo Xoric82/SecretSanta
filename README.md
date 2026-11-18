@@ -11,6 +11,13 @@ Built with **native Modern Web Standards** following [Google Chrome's Modern Web
 - **User Accounts & Roles:**
   - Simple registration & login with secure password hashing (`PBKDF2-HMAC-SHA256`).
   - The first family member to register automatically becomes the **Organiser**.
+  - **Account lockout:** 5 failed sign-in attempts lock an account for 30 minutes. The organiser can unlock it sooner from the Organiser page.
+  - **Password resets:** the organiser can reset anyone's password to a one-time temporary password. That person must choose a new password the next time they sign in. Everyone can change their own password under **My Account** (click your name in the header).
+- **Children (managed profiles):**
+  - Any signed-in parent can add any number of children from the **Children** page. Children have no login; the parent adds, edits and removes items on their wishlists.
+  - Each child can be individually **included in or excluded from the draw**. Excluded children still have a wishlist the family can shop from.
+  - If a child is in the draw, the parent sees who that child is buying for and shops on their behalf.
+  - Because children never log in, the managing parent *can* see which of their child's items have been bought.
 - **Wishlist Management:**
   - Add items with titles, details, size/color notes, store links, price estimates, and priority ratings.
   - Edit or delete items anytime.
@@ -24,6 +31,8 @@ Built with **native Modern Web Standards** following [Google Chrome's Modern Web
   - No one is ever assigned to themselves.
   - Eliminates isolated two-person closed loops.
   - Even the organiser does not see other members' matches in the UI, keeping the secret safe for everyone.
+  - Children are never assigned their own parent. With **Keep households apart** (organiser setting, on by default) nobody is matched within their household (parent + their children).
+  - Only people marked "in the draw" take part; the organiser can include/exclude anyone, parents can include/exclude their own children. Inclusion is locked once names are drawn (reset the draw to change it).
 - **Modern Web Standards (Google Chrome Modern Web Guidance):**
   - Native `<dialog>` elements for modals (`showModal()` & `close()`) with native `::backdrop` styling.
   - Modern CSS: CSS Custom Properties, fluid `clamp()` typography, CSS Grid & Flexbox, and CSS `:has()` relational selectors.
@@ -161,15 +170,6 @@ santa.xoric.co.uk {
     encode zstd gzip
 }
 ```
-        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-        X-Content-Type-Options "nosniff"
-        X-Frame-Options "SAMEORIGIN"
-        Referrer-Policy "strict-origin-when-cross-origin"
-    }
-
-    encode zstd gzip
-}
-```
 
 Reload Caddy:
 ```bash
@@ -177,6 +177,25 @@ sudo systemctl reload caddy
 ```
 
 Caddy will automatically provision and renew Let's Encrypt / ZeroSSL TLS certificates.
+
+---
+
+## 🔑 Account Recovery (Command Line)
+
+If the **organiser** is locked out or forgets their password, nobody can reset it from the web UI, so use `manage.py` on the server:
+
+```bash
+# Proxmox LXC / systemd install
+cd /opt/secretsanta
+sudo -u www-data SECRETSANTA_DB=/opt/secretsanta/data/secretsanta.db python3 manage.py list
+sudo -u www-data SECRETSANTA_DB=/opt/secretsanta/data/secretsanta.db python3 manage.py unlock alice
+sudo -u www-data SECRETSANTA_DB=/opt/secretsanta/data/secretsanta.db python3 manage.py reset-password alice
+
+# Docker
+docker exec secretsanta python manage.py reset-password alice
+```
+
+`reset-password` prints a temporary password. The user must replace it the first time they sign in.
 
 ---
 
@@ -193,6 +212,10 @@ Caddy will automatically provision and renew Let's Encrypt / ZeroSSL TLS certifi
 2. **Password Security:**
    - Passwords hashed with `PBKDF2-HMAC-SHA256` using 100,000 rounds and a 16-byte cryptographically random salt per user.
 3. **Session Cookies:**
-   - Issued with `HttpOnly`, `SameSite=Lax`, and a 30-day expiration window.
-4. **SQLite Concurrency:**
+   - Issued with `HttpOnly`, `SameSite=Lax`, and a 30-day expiration window. The token is only ever sent in the cookie, never in a response body JavaScript could read.
+   - `Secure` is added automatically when the request arrived over HTTPS through the reverse proxy (`X-Forwarded-Proto: https`, which Caddy and Nginx Proxy Manager both send). Override this with `COOKIE_SECURE=true|false|auto` in `.env`.
+   - API responses are sent with `Cache-Control: no-store`, so assignments and purchase data never sit in a browser or proxy cache.
+4. **Login Lockout:**
+   - Attempts are counted per account inside a database write transaction, so even simultaneous guesses can't get more than 5 tries. A correct password resets the count. Changing or resetting a password signs that account out on its other devices.
+5. **SQLite Concurrency:**
    - Enabled Write-Ahead Logging (`PRAGMA journal_mode = WAL;`) and enforced Foreign Key constraints (`PRAGMA foreign_keys = ON;`) for high concurrency without database lock contention.

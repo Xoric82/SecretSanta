@@ -7,7 +7,7 @@ WORKDIR /app
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 # Copy application files
-COPY database.py server.py ./
+COPY database.py server.py manage.py ./
 COPY public/ ./public/
 
 # Create data directory for SQLite database persistence
