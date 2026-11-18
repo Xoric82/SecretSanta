@@ -16,6 +16,7 @@ const state = {
   assignment: null,        // { receiver_id, receiver_display_name, wishlist_count }
   participants: [],        // array of user objects
   currentWishlist: null,   // { user, is_owner, items }
+  requiresRegistrationCode: false,
   currentRoute: 'home',
   routeParam: null
 };
@@ -359,6 +360,13 @@ function renderAuthView(initialTab = 'login') {
         <label class="form-label" for="reg-password">Password</label>
         <input class="form-input" type="password" id="reg-password" name="password" required minlength="4" autocomplete="new-password">
       </div>
+      ${state.requiresRegistrationCode ? `
+      <div class="form-group">
+        <label class="form-label" for="reg-passcode">Family Passcode *</label>
+        <input class="form-input" type="password" id="reg-passcode" name="registration_code" required autocomplete="off" placeholder="Enter the secret family code">
+        <div class="form-hint">Ask the organiser for the family invite code.</div>
+      </div>
+      ` : ''}
       <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 1.5rem;">Create Account 🎁</button>
       <p style="font-size: 0.8125rem; color: var(--color-text-subtle); text-align: center; margin-top: 0.75rem;">
         Note: The first person to register becomes the Organiser!
@@ -1123,9 +1131,15 @@ async function refreshState() {
     state.currentUser = meData.user;
     state.assignment = meData.assignment;
     state.event = meData.event;
+    if (meData.requires_registration_code !== undefined) {
+      state.requiresRegistrationCode = Boolean(meData.requires_registration_code);
+    }
 
     const eventData = await api('/api/event');
     state.participants = eventData.participants || [];
+    if (eventData.requires_registration_code !== undefined) {
+      state.requiresRegistrationCode = Boolean(eventData.requires_registration_code);
+    }
   } catch (err) {
     console.error('State refresh failed:', err);
   }

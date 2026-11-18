@@ -10,6 +10,32 @@ import os
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 
+def load_env_file(filepath: Optional[str] = None):
+    """Loads key-value pairs from a .env file into os.environ if not already present."""
+    if filepath is None:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        candidate = os.path.join(base_dir, ".env")
+        if os.path.isfile(candidate):
+            filepath = candidate
+        elif os.path.isfile(".env"):
+            filepath = os.path.abspath(".env")
+    if filepath and os.path.isfile(filepath):
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, val = line.split("=", 1)
+                    key = key.strip()
+                    val = val.strip().strip("'\"")
+                    if key and key not in os.environ:
+                        os.environ[key] = val
+        except Exception:
+            pass
+
+load_env_file()
+
 DB_PATH = os.environ.get("SECRETSANTA_DB", "secretsanta.db")
 
 

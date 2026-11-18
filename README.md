@@ -93,12 +93,19 @@ cd /opt/secretsanta
 mkdir -p /opt/secretsanta/data
 chown -R www-data:www-data /opt/secretsanta
 
-# 4. Install and enable the systemd service
+# 4. (Optional but recommended) Set a family registration passcode in .env
+# This prevents random internet strangers from registering!
+cp .env.example .env
+nano .env  # set REGISTRATION_PASSPHRASE=YourSecretPasscode
+chown www-data:www-data .env
+chmod 600 .env
+
+# 5. Install and enable the systemd service
 cp /opt/secretsanta/secretsanta.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now secretsanta
 
-# 5. Verify it's active and listening on port 8082
+# 6. Verify it's active and listening on port 8082
 systemctl status secretsanta
 ```
 

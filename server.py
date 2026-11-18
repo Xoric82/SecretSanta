@@ -7,15 +7,22 @@ Serves modern web frontend and provides secure REST API.
 import os
 import sys
 import json
+import secrets
 import urllib.parse
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from http.cookies import SimpleCookie
 import database as db
 
+db.load_env_file()
+
 PORT = int(os.environ.get("PORT", "8082"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 PUBLIC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "public"))
+
+
+def get_registration_passphrase() -> str:
+    return os.environ.get("REGISTRATION_PASSPHRASE", "").strip()
 
 MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -198,9 +205,15 @@ class SecretSantaRequestHandler(BaseHTTPRequestHandler):
     def handle_api_get(self, path: str, query_params: dict):
         # /api/me
         if path == "/api/me":
+            requires_code = bool(get_registration_passphrase())
             user = self.get_current_user()
             if not user:
-                self.send_json({"user": None, "assignment": None, "event": db.get_event_settings()})
+                self.send_json({
+                    "user": None,
+                    "assignment": None,
+                    "event": db.get_event_settings(),
+                    "requires_registration_code": requires_code
+                })
                 return
 
             event = db.get_event_settings()
@@ -208,7 +221,8 @@ class SecretSantaRequestHandler(BaseHTTPRequestHandler):
             self.send_json({
                 "user": user,
                 "assignment": assignment,
-                "event": event
+                "event": event,
+                "requires_registration_code": requires_code
             })
             return
 
@@ -218,7 +232,8 @@ class SecretSantaRequestHandler(BaseHTTPRequestHandler):
             users = db.get_all_users()
             self.send_json({
                 "event": event,
-                "participants": users
+                "participants": users,
+                "requires_registration_code": bool(get_registration_passphrase())
             })
             return
 
@@ -266,6 +281,16 @@ class SecretSantaRequestHandler(BaseHTTPRequestHandler):
 
         # /api/register
         if path == "/api/register":
+            required_passphrase = get_registration_passphrase()
+            if required_passphrase:
+                provided_code = str(data.get("registration_code", "")).strip()
+                if not secrets.compare_digest(provided_code, required_passphrase):
+                    self.send_error_json(
+                        "Invalid family registration passcode. Please ask the organiser for the invite code.",
+                        HTTPStatus.FORBIDDEN
+                    )
+                    return
+
             username = data.get("username", "")
             display_name = data.get("display_name", "")
             password = data.get("password", "")

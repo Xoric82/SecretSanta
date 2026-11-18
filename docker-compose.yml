@@ -11,3 +11,4 @@ services:
       - PORT=8082
       - HOST=0.0.0.0
       - SECRETSANTA_DB=/data/secretsanta.db
+      - REGISTRATION_PASSPHRASE=${REGISTRATION_PASSPHRASE:-}

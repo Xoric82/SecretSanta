@@ -204,6 +204,42 @@ class TestSecretSantaServer(unittest.TestCase):
             self.assertEqual(r.status, 200)
             self.assertIn("image/svg+xml", r.headers.get("Content-Type"))
 
+    def test_registration_passphrase(self):
+        # Set registration passphrase in environment
+        os.environ["REGISTRATION_PASSPHRASE"] = "FamilySecret2026!"
+        try:
+            # 1. Check /api/event reports requires_registration_code = True
+            status, evt_body, _, _ = self.make_request("GET", "/api/event")
+            self.assertEqual(status, 200)
+            self.assertTrue(evt_body.get("requires_registration_code"))
+
+            # 2. Registration fails without code
+            status, err, _, _ = self.make_request(
+                "POST", "/api/register",
+                {"username": "intruder", "display_name": "Intruder", "password": "password123"}
+            )
+            self.assertEqual(status, 403)
+            self.assertIn("passcode", err["error"])
+
+            # 3. Registration fails with wrong code
+            status, err, _, _ = self.make_request(
+                "POST", "/api/register",
+                {"username": "intruder", "display_name": "Intruder", "password": "password123", "registration_code": "wrongcode"}
+            )
+            self.assertEqual(status, 403)
+            self.assertIn("passcode", err["error"])
+
+            # 4. Registration succeeds with correct code
+            status, body, token, _ = self.make_request(
+                "POST", "/api/register",
+                {"username": "david", "display_name": "David", "password": "password123", "registration_code": "FamilySecret2026!"}
+            )
+            self.assertEqual(status, 201)
+            self.assertEqual(body["user"]["username"], "david")
+            self.assertIsNotNone(token)
+        finally:
+            os.environ.pop("REGISTRATION_PASSPHRASE", None)
+
 
 if __name__ == "__main__":
     unittest.main()
