@@ -149,11 +149,11 @@ class SecretSantaRequestHandler(BaseHTTPRequestHandler):
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(content)))
-            # Cache static assets slightly for performance, but no-cache for index.html
-            if ext == ".html":
-                self.send_header("Cache-Control", "no-cache")
+            # Do not cache HTML, JS, or CSS to ensure client updates are applied immediately
+            if ext in (".html", ".js", ".css"):
+                self.send_header("Cache-Control", "no-cache, must-revalidate")
             else:
-                self.send_header("Cache-Control", "public, max-age=3600")
+                self.send_header("Cache-Control", "public, max-age=86400")
             self.end_headers()
             self.wfile.write(content)
         except Exception as e:

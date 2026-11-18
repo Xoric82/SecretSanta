@@ -360,13 +360,11 @@ function renderAuthView(initialTab = 'login') {
         <label class="form-label" for="reg-password">Password</label>
         <input class="form-input" type="password" id="reg-password" name="password" required minlength="4" autocomplete="new-password">
       </div>
-      ${state.requiresRegistrationCode ? `
-      <div class="form-group">
-        <label class="form-label" for="reg-passcode">Family Passcode *</label>
-        <input class="form-input" type="password" id="reg-passcode" name="registration_code" required autocomplete="off" placeholder="Enter the secret family code">
-        <div class="form-hint">Ask the organiser for the family invite code.</div>
+      <div class="form-group" id="reg-passcode-group">
+        <label class="form-label" for="reg-passcode">Family Passcode <span style="color: var(--color-primary); font-weight: bold;">*</span></label>
+        <input class="form-input" type="password" id="reg-passcode" name="registration_code" autocomplete="off" placeholder="Enter the secret family code">
+        <div class="form-hint">Enter the secret family code set by the organiser to join.</div>
       </div>
-      ` : ''}
       <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 1.5rem;">Create Account 🎁</button>
       <p style="font-size: 0.8125rem; color: var(--color-text-subtle); text-align: center; margin-top: 0.75rem;">
         Note: The first person to register becomes the Organiser!
@@ -428,6 +426,10 @@ function renderAuthView(initialTab = 'login') {
   regForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const formData = new FormData(regForm);
+    const passcodeInput = regForm.querySelector('#reg-passcode');
+    if (passcodeInput) {
+      passcodeInput.style.borderColor = '';
+    }
     try {
       const res = await api('/api/register', {
         method: 'POST',
@@ -439,6 +441,12 @@ function renderAuthView(initialTab = 'login') {
       await refreshState();
       navigate('#home');
     } catch (err) {
+      if (err.message && err.message.toLowerCase().includes('passcode')) {
+        if (passcodeInput) {
+          passcodeInput.focus();
+          passcodeInput.style.borderColor = 'var(--color-danger)';
+        }
+      }
       showToast(err.message || 'Registration failed', 'error');
     }
   });

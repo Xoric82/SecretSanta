@@ -29,8 +29,9 @@ def load_env_file(filepath: Optional[str] = None):
                     key, val = line.split("=", 1)
                     key = key.strip()
                     val = val.strip().strip("'\"")
-                    if key and key not in os.environ:
-                        os.environ[key] = val
+                    if key:
+                        if key not in os.environ or os.environ[key] == "":
+                            os.environ[key] = val
         except Exception:
             pass
 
